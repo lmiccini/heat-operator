@@ -613,7 +613,7 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 	// - %-config secret holding minimal heat config required to get the service up, user can add additional files to be added to the service
 	// - parameters which has passwords gets added from the OpenStack secret via the init container
 	//
-	err = r.generateServiceSecrets(ctx, instance, helper, &secretVars, memcached, db)
+	err = r.generateServiceSecrets(ctx, instance, helper, &secretVars, memcached, db, transportURL)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			condition.ServiceConfigReadyCondition,
@@ -1061,6 +1061,7 @@ func (r *HeatReconciler) generateServiceSecrets(
 	envVars *map[string]env.Setter,
 	mc *memcachedv1.Memcached,
 	db *mariadbv1.Database,
+	transportURL *rabbitmqv1.TransportURL,
 ) error {
 	//
 	// create Secret required for heat input
@@ -1127,12 +1128,17 @@ func (r *HeatReconciler) generateServiceSecrets(
 	if err != nil {
 		return err
 	}
-	transportURL := strings.TrimSuffix(string(transportURLSecret.Data["transport_url"]), "\n")
+	transportURLString := strings.TrimSuffix(string(transportURLSecret.Data["transport_url"]), "\n")
 
 	databaseAccount := db.GetAccount()
 	dbSecret := db.GetSecret()
 
-	templateParameters := initTemplateParameters(instance, authURL, password, domainAdminPassword, authEncryptionKey, transportURL, mc, databaseAccount, dbSecret)
+	templateParameters := initTemplateParameters(instance, authURL, password, domainAdminPassword, authEncryptionKey, transportURLString, mc, databaseAccount, dbSecret)
+
+	// Quorum queues configuration
+	if transportURL.GetQuorumQueues() {
+		templateParameters["RabbitQuorumQueue"] = true
+	}
 
 	// Render vhost configuration for API and CFN
 	httpdAPIVhostConfig := map[string]interface{}{}
