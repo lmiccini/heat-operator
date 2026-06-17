@@ -951,14 +951,10 @@ var _ = Describe("Heat controller", func() {
 
 			// Step 2: Enable quorum queues by updating the transport URL secret
 			Eventually(func(g Gomega) {
-				// Get the Heat instance to find the actual transport URL secret name
-				heat := GetHeat(heatName)
-				g.Expect(heat.Status.TransportURLSecret).ShouldNot(BeEmpty())
-
 				transportSecret := &corev1.Secret{}
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{
 					Namespace: namespace,
-					Name:      heat.Status.TransportURLSecret,
+					Name:      HeatMessageBusSecretName,
 				}, transportSecret)).Should(Succeed())
 
 				transportSecret.Data["quorumqueues"] = []byte("true")
@@ -1141,6 +1137,23 @@ var _ = Describe("Heat controller", func() {
 				),
 			)
 
+			apiFixture := setupHeatKeystoneFixture(logger)
+			DeferCleanup(apiFixture.Cleanup)
+			keystoneAPIName := keystone.CreateKeystoneAPIWithFixture(namespace, apiFixture)
+			keystone.UpdateKeystoneAPIEndpoint(keystoneAPIName, "internal", apiFixture.Endpoint())
+			DeferCleanup(keystone.DeleteKeystoneAPI, keystoneAPIName)
+
+			heatDatabase := types.NamespacedName{
+				Namespace: namespace,
+				Name:      heat.ServiceName,
+			}
+			acc, accSecret := mariadb.CreateMariaDBAccountAndSecret(heatDatabase, mariadbv1.MariaDBAccountSpec{})
+			DeferCleanup(k8sClient.Delete, ctx, acc)
+			DeferCleanup(k8sClient.Delete, ctx, accSecret)
+			mariaDBDatabaseName := mariadb.CreateMariaDBDatabase(namespace, heat.DatabaseCRName, mariadbv1.MariaDBDatabaseSpec{})
+			mariaDBDatabase := mariadb.GetMariaDBDatabase(mariaDBDatabaseName)
+			DeferCleanup(k8sClient.Delete, ctx, mariaDBDatabase)
+
 			DeferCleanup(th.DeleteInstance, CreateHeat(heatName, spec))
 
 			// Simulate the main transport URL
@@ -1157,6 +1170,10 @@ var _ = Describe("Heat controller", func() {
 
 			// Simulate the notifications transport URL as ready
 			infra.SimulateTransportURLReady(notificationsTransportURLName)
+
+			mariadb.SimulateMariaDBAccountCompleted(heatDatabase)
+			mariadb.SimulateMariaDBDatabaseCompleted(types.NamespacedName{Namespace: namespace, Name: heat.DatabaseCRName})
+			th.SimulateJobSuccess(heatDbSyncName)
 		})
 
 		It("should initially have notifications enabled", func() {
@@ -1499,6 +1516,84 @@ var _ = Describe("Heat controller", func() {
 				})
 				g.Expect(secret.Finalizers).NotTo(
 					ContainElement(heat.ACConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+
+	When("TransportURL consumer finalizer is managed", func() {
+		BeforeEach(func() {
+			DeferCleanup(
+				k8sClient.Delete, ctx, CreateHeatMessageBusSecret(namespace, HeatMessageBusSecretName))
+			DeferCleanup(
+				k8sClient.Delete, ctx, CreateHeatSecret(namespace, SecretName))
+
+			apiFixture := setupHeatKeystoneFixture(logger)
+			DeferCleanup(apiFixture.Cleanup)
+			keystoneAPIName := keystone.CreateKeystoneAPIWithFixture(namespace, apiFixture)
+			keystone.UpdateKeystoneAPIEndpoint(keystoneAPIName, "internal", apiFixture.Endpoint())
+			DeferCleanup(keystone.DeleteKeystoneAPI, keystoneAPIName)
+
+			heatDatabase := types.NamespacedName{
+				Namespace: namespace,
+				Name:      heat.ServiceName,
+			}
+			acc, accSecret := mariadb.CreateMariaDBAccountAndSecret(heatDatabase, mariadbv1.MariaDBAccountSpec{})
+			DeferCleanup(k8sClient.Delete, ctx, acc)
+			DeferCleanup(k8sClient.Delete, ctx, accSecret)
+			mariaDBDatabaseName := mariadb.CreateMariaDBDatabase(namespace, heat.DatabaseCRName, mariadbv1.MariaDBDatabaseSpec{})
+			mariaDBDatabase := mariadb.GetMariaDBDatabase(mariaDBDatabaseName)
+			DeferCleanup(k8sClient.Delete, ctx, mariaDBDatabase)
+
+			DeferCleanup(th.DeleteInstance, CreateHeat(heatName, GetDefaultHeatSpec()))
+			DeferCleanup(
+				mariadb.DeleteDBService,
+				mariadb.CreateDBService(
+					namespace,
+					GetHeat(heatName).Spec.DatabaseInstance,
+					corev1.ServiceSpec{
+						Ports: []corev1.ServicePort{{Port: 3306}},
+					},
+				),
+			)
+			DeferCleanup(infra.DeleteMemcached, infra.CreateMemcached(namespace, "memcached", memcachedSpec))
+			infra.SimulateMemcachedReady(memcachedName)
+
+			infra.SimulateTransportURLReady(heatTransportURLName)
+			mariadb.SimulateMariaDBAccountCompleted(heatDatabase)
+			mariadb.SimulateMariaDBDatabaseCompleted(types.NamespacedName{Namespace: namespace, Name: heat.DatabaseCRName})
+			th.SimulateJobSuccess(heatDbSyncName)
+		})
+
+		It("should add the consumer finalizer to the transport secret", func() {
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: namespace,
+					Name:      HeatMessageBusSecretName,
+				})
+				g.Expect(secret.Finalizers).To(
+					ContainElement(heat.TransportConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should remove the consumer finalizer from transport secret on CR deletion", func() {
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: namespace,
+					Name:      HeatMessageBusSecretName,
+				})
+				g.Expect(secret.Finalizers).To(
+					ContainElement(heat.TransportConsumerFinalizer))
+			}, timeout, interval).Should(Succeed())
+
+			th.DeleteInstance(GetHeat(heatName))
+
+			Eventually(func(g Gomega) {
+				secret := th.GetSecret(types.NamespacedName{
+					Namespace: namespace,
+					Name:      HeatMessageBusSecretName,
+				})
+				g.Expect(secret.Finalizers).NotTo(
+					ContainElement(heat.TransportConsumerFinalizer))
 			}, timeout, interval).Should(Succeed())
 		})
 	})

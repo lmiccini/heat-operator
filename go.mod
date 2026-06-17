@@ -13,7 +13,7 @@ require (
 	github.com/openstack-k8s-operators/heat-operator/api v0.3.1-0.20240214134649-6643d1b09d49
 	github.com/openstack-k8s-operators/infra-operator/apis v0.6.1-0.20260613085342-ac53eb7ee688
 	github.com/openstack-k8s-operators/keystone-operator/api v0.6.1-0.20260615071040-c39f79c2b401
-	github.com/openstack-k8s-operators/lib-common/modules/common v0.6.1-0.20260610101308-d3778a549c89
+	github.com/openstack-k8s-operators/lib-common/modules/common v0.6.1-0.20260617073944-e6e62be1c4ec
 	github.com/openstack-k8s-operators/lib-common/modules/openstack v0.6.1-0.20260610101308-d3778a549c89
 	github.com/openstack-k8s-operators/lib-common/modules/storage v0.6.1-0.20260610101308-d3778a549c89
 	github.com/openstack-k8s-operators/lib-common/modules/test v0.6.1-0.20260610101308-d3778a549c89
@@ -141,3 +141,5 @@ replace k8s.io/component-base => k8s.io/component-base v0.31.14 //allow-merging
 replace github.com/rabbitmq/cluster-operator/v2 => github.com/openstack-k8s-operators/rabbitmq-cluster-operator/v2 v2.6.1-0.20250929174222-a0d328fa4dec //allow-merging
 
 replace k8s.io/kube-openapi => k8s.io/kube-openapi v0.0.0-20250627150254-e9823e99808e //allow-merging
+
+replace github.com/openstack-k8s-operators/infra-operator/apis => github.com/lmiccini/infra-operator/apis v0.0.0-20260617055259-c9e555a422b1
