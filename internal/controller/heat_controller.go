@@ -976,7 +976,7 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 	instance.Status.Conditions.MarkTrue(heatv1beta1.HeatStackDomainReadyCondition, heatv1beta1.HeatStackDomainReadyMessage)
 
 	// deploy heat-engine
-	heatEngine, op, err := r.engineDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
+	heatEngine, engineOp, err := r.engineDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			heatv1beta1.HeatEngineReadyCondition,
@@ -1014,13 +1014,13 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 		if c != nil {
 			instance.Status.Conditions.Set(c)
 		}
-		if op != controllerutil.OperationResultNone {
-			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
+		if engineOp != controllerutil.OperationResultNone {
+			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(engineOp)))
 		}
 	}
 
 	// deploy heat-api
-	heatAPI, op, err := r.apiDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
+	heatAPI, apiOp, err := r.apiDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			heatv1beta1.HeatAPIReadyCondition,
@@ -1061,13 +1061,13 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 			instance.Status.Conditions.Set(c)
 		}
 
-		if op != controllerutil.OperationResultNone {
-			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
+		if apiOp != controllerutil.OperationResultNone {
+			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(apiOp)))
 		}
 	}
 
 	// deploy heat-api-cfn
-	heatCfnAPI, op, err := r.cfnapiDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
+	heatCfnAPI, cfnOp, err := r.cfnapiDeploymentCreateOrUpdate(ctx, instance, memcached, transportURL.Status.SecretName)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			heatv1beta1.HeatCfnAPIReadyCondition,
@@ -1105,10 +1105,14 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 		if c != nil {
 			instance.Status.Conditions.Set(c)
 		}
-		if op != controllerutil.OperationResultNone {
-			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(op)))
+		if cfnOp != controllerutil.OperationResultNone {
+			Log.Info(fmt.Sprintf("Deployment %s successfully reconciled - operation: %s", instance.Name, string(cfnOp)))
 		}
 	}
+
+	allSubCRsStable := engineOp == controllerutil.OperationResultNone &&
+		apiOp == controllerutil.OperationResultNone &&
+		cfnOp == controllerutil.OperationResultNone
 
 	// Manage the old AC secret's finalizer and status tracking.
 	// On rotation (old != new), only remove the old secret's finalizer after
@@ -1136,46 +1140,32 @@ func (r *HeatReconciler) reconcileNormal(ctx context.Context, instance *heatv1be
 			condition.ReadyCondition, condition.ReadyMessage)
 	}
 
-	// Finalize transport URL secret rotation at end of reconcile.
-	// Only remove the old secret's finalizer after all sub-conditions are true,
-	// ensuring no service is still using the previous secret.
-	isTransportRotation := instance.Status.TransportURLSecret != "" &&
-		instance.Status.TransportURLSecret != transportURL.Status.SecretName
+	guardReady := allSubCRsStable && instance.Status.Conditions.AllSubConditionIsTrue()
 
-	if isTransportRotation {
-		if instance.Status.Conditions.AllSubConditionIsTrue() {
-			if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
-				ctx, helper, instance.Namespace,
-				instance.Status.TransportURLSecret,
-				heat.TransportConsumerFinalizer,
-			); err != nil {
-				return ctrl.Result{}, err
-			}
-			instance.Status.TransportURLSecret = transportURL.Status.SecretName
-		}
-	} else {
-		instance.Status.TransportURLSecret = transportURL.Status.SecretName
+	secretName, err := rabbitmqv1.FinalizeTransportSecretRotation(
+		ctx, helper, instance.Namespace,
+		instance.Status.TransportURLSecret,
+		transportURL.Status.SecretName,
+		heat.TransportConsumerFinalizer,
+		guardReady,
+	)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
+	instance.Status.TransportURLSecret = secretName
 
-	// Finalize notification transport URL secret rotation at end of reconcile.
 	if notificationsTransportURL != nil {
-		isNotifTransportRotation := instance.Status.NotificationsTransportURLSecret != "" &&
-			instance.Status.NotificationsTransportURLSecret != notificationsTransportURL.Status.SecretName
-
-		if isNotifTransportRotation {
-			if instance.Status.Conditions.AllSubConditionIsTrue() {
-				if err := rabbitmqv1.RemoveTransportSecretConsumerFinalizer(
-					ctx, helper, instance.Namespace,
-					instance.Status.NotificationsTransportURLSecret,
-					heat.TransportConsumerFinalizer,
-				); err != nil {
-					return ctrl.Result{}, err
-				}
-				instance.Status.NotificationsTransportURLSecret = notificationsTransportURL.Status.SecretName
-			}
-		} else {
-			instance.Status.NotificationsTransportURLSecret = notificationsTransportURL.Status.SecretName
+		notifSecretName, err := rabbitmqv1.FinalizeTransportSecretRotation(
+			ctx, helper, instance.Namespace,
+			instance.Status.NotificationsTransportURLSecret,
+			notificationsTransportURL.Status.SecretName,
+			heat.TransportConsumerFinalizer,
+			guardReady,
+		)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
+		instance.Status.NotificationsTransportURLSecret = notifSecretName
 	}
 
 	Log.Info("Reconciled Heat successfully")
